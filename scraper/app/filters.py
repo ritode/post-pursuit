@@ -160,13 +160,61 @@ def detect_language_requirements(description):
                 return level.group(1).upper()
             return "required"
 
-    if re.search(r"\b(german|deutsch)\b", text) and re.search(
-        r"\b(required|must|pflicht|erforderlich|vorausgesetzt)\b", text
+    if (
+        re.search(r"\b(?:german|deutsch)\s+(?:is\s+)?(?:required|mandatory|pflicht|erforderlich|vorausgesetzt)\b", text)
+        or re.search(r"\b(?:must\s+speak|knowledge\s+of|proficiency\s+in|fluent\s+in)\s+(?:german|deutsch)\b", text)
+        or re.search(r"\b(?:deutschkenntnisse|sprachkenntnisse\s+deutsch)\b", text)
+        or re.search(r"\bgerman\s+(?:language\s+)?(?:skills?\s+)?(?:are\s+|is\s+)?required\b", text)
     ):
         return "required"
 
     return "none detected"
 
+
+# Explicit rejection phrases when companies do NOT sponsor foreign internationals
+NO_SPONSORSHIP_PATTERNS = [
+    r"no\s+visa\s+sponsorship",
+    r"without\s+(?:the\s+)?need\s+for\s+sponsorship",
+    r"unable\s+to\s+sponsor",
+    r"cannot\s+sponsor",
+    r"will\s+not\s+sponsor",
+    r"not\s+offering\s+sponsorship",
+    r"not\s+providing\s+sponsorship",
+    r"does\s+not\s+offer\s+visa",
+    r"do\s+not\s+offer\s+visa",
+    r"must\s+have\s+(?:valid\s+)?work\s+authorization",
+    r"must\s+have\s+(?:a\s+)?valid\s+work\s+permit",
+    r"must\s+be\s+authorized\s+to\s+work",
+    r"must\s+already\s+have\s+(?:the\s+)?right\s+to\s+work",
+    r"already\s+have\s+the\s+legal\s+right\s+to\s+work",
+    r"eligible\s+to\s+work\s+in\s+.*?without\s+(?:any\s+)?(?:visa\s+)?sponsorship",
+    r"right\s+to\s+work\s+in\s+.*?without\s+(?:any\s+)?(?:visa\s+)?sponsorship",
+    r"valid\s+(?:eu|uk|german|australian|irish)\s+work\s+permit\s+required",
+    r"gültige\s+arbeitserlaubnis\s+(?:erforderlich|vorausgesetzt)",
+    r"keine\s+visasponsoring",
+    r"keine\s+arbeitserlaubnis\s+gesponsert",
+    r"only\s+candidates\s+with\s+(?:a\s+)?valid\s+work\s+permit",
+    r"candidates\s+must\s+currently\s+reside\s+in",
+    r"currently\s+living\s+in\s+(?:germany|the\s+netherlands|the\s+uk|australia|ireland)",
+]
+
+# Explicit positive patterns when companies welcome foreign talent / sponsor visas
+SPONSORSHIP_PATTERNS = [
+    r"visa\s+sponsorship\s+(?:is\s+)?(?:available|provided|offered|possible)",
+    r"offers?\s+visa\s+sponsorship",
+    r"provide\s+visa\s+sponsorship",
+    r"relocation\s+(?:support|package|assistance|allowance)",
+    r"relocation\s+to\s+",
+    r"help\s+(?:you\s+)?relocate",
+    r"eu\s+blue\s+card",
+    r"blue\s+card\s+eligible",
+    r"global\s+mobility",
+    r"open\s+to\s+international\s+applicants",
+    r"we\s+sponsor\s+visas?",
+    r"sponsorship\s+available",
+    r"visum\s+sponsoring",
+    r"unterstützung\s+beim\s+umzug",
+]
 
 VISA_PATTERNS = [
     r"\bvisa\b",
@@ -177,6 +225,28 @@ VISA_PATTERNS = [
     r"\barbeitserlaubnis\b",
     r"\bumzug",
 ]
+
+
+def detect_no_sponsorship(description):
+    """Detect if the job posting explicitly refuses visa sponsorship or requires existing work permits."""
+    if not description:
+        return False
+    text = description.lower()
+    for p in NO_SPONSORSHIP_PATTERNS:
+        if re.search(p, text):
+            return True
+    return False
+
+
+def detect_visa_sponsorship(description):
+    """Detect if the job posting explicitly offers visa sponsorship or relocation."""
+    if not description:
+        return False
+    text = description.lower()
+    for p in SPONSORSHIP_PATTERNS:
+        if re.search(p, text):
+            return True
+    return False
 
 
 def detect_visa_mentioned(description):
@@ -217,6 +287,20 @@ def apply_filters(job, profile=None):
     if result.seniority == "intern":
         result.status = "rejected"
         result.reasons.append("seniority:intern_or_student")
+        result.score = 0.0
+        return result
+
+    # Hard rejection if strict German C1/C2/fluent is required
+    if result.requires_german in ("C1", "C2", "native", "fluent", "required"):
+        result.status = "rejected"
+        result.reasons.append(f"language:german_{result.requires_german.lower()}")
+        result.score = 0.0
+        return result
+
+    # Hard rejection if posting explicitly refuses visa sponsorship or requires existing work permits
+    if detect_no_sponsorship(description):
+        result.status = "rejected"
+        result.reasons.append("visa:no_sponsorship")
         result.score = 0.0
         return result
 
@@ -321,7 +405,16 @@ def apply_filters(job, profile=None):
     else:
         score += 1.0
 
-    # F. Penalties for conflicting stacks (e.g. pure PHP/Laravel, COBOL, SAP)
+    # F. Visa Sponsorship Bonus (+1.5 pts)
+    has_sponsorship = detect_visa_sponsorship(description) or bool(job.get("visa_sponsored"))
+    if has_sponsorship:
+        result.visa_mentioned = True
+        result.reasons.append("visa:sponsorship_offered")
+        score += 1.5
+    elif detect_visa_mentioned(description):
+        result.visa_mentioned = True
+
+    # G. Penalties for conflicting stacks (e.g. pure PHP/Laravel, COBOL, SAP)
     if offtarget_matches and len(primary_matches) <= 1:
         score -= min(2.0, len(offtarget_matches) * 0.6)
 
@@ -333,7 +426,7 @@ def apply_filters(job, profile=None):
     if final_score >= min_score:
         result.status = "passed"
     else:
-        result.status = "passed"  # evaluated, passed filter, score recorded
+        result.status = "rejected"
         result.reasons.append(f"score_below_{min_score}")
 
     return result

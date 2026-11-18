@@ -43,18 +43,26 @@ def run_pipeline(
     init_db()
 
     # ----------------------------------------------------
-    # Phase 1: Anonymous LinkedIn Scraping
+    # Phase 1: Scraping Jobs (LinkedIn + Dedicated International Boards)
     # ----------------------------------------------------
     if not skip_scrape:
-        print("\n[Phase 1/4] Scraping LinkedIn across target regions (guest incognito)...")
+        print("\n[Phase 1a/4] Scraping LinkedIn across target regions (guest incognito)...")
         try:
             from app.scraper import scrape_jobs
             scraped = scrape_jobs(max_details=max_details, headless=True)
-            print(f"Scraped {len(scraped)} jobs successfully.")
+            print(f"Scraped {len(scraped)} jobs successfully from LinkedIn.")
         except Exception as e:
-            print(f"Warning: Scrape encountered an error: {e}")
+            print(f"Warning: LinkedIn scrape encountered an error: {e}")
+
+        print("\n[Phase 1b/4] Scraping dedicated international visa-sponsorship boards...")
+        try:
+            from app.international_scrapers import scrape_all_international_sources
+            intl_scraped = scrape_all_international_sources()
+            print(f"Scraped {len(intl_scraped)} jobs from international visa platforms.")
+        except Exception as e:
+            print(f"Warning: International scrapers encountered an error: {e}")
     else:
-        print("\n[Phase 1/4] Skipping scrape as requested.")
+        print("\n[Phase 1/4] Skipping scrapers as requested.")
 
     # ----------------------------------------------------
     # Phase 2: Deterministic 0-10 Scoring & Filtering

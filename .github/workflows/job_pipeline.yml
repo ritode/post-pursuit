@@ -14,7 +14,7 @@ on:
       min_score:
         description: 'Minimum match score threshold'
         required: false
-        default: '7.0'
+        default: '8.0'
       skip_scrape:
         description: 'Skip scraping phase (process/alert only)'
         type: boolean

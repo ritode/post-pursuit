@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import urllib.parse
 from pathlib import Path
@@ -67,6 +68,23 @@ def format_slack_message(job: Dict[str, Any], github_repo: str) -> str:
 
     job_url = job.get("url") or f"https://www.linkedin.com/jobs/view/{job_id}/"
 
+    # Identify platform source
+    url_lower = job_url.lower()
+    if "arbeitnow" in url_lower:
+        source_label = "Arbeitnow"
+    elif "relocate.me" in url_lower:
+        source_label = "Relocate.me"
+    elif any(d in url_lower for d in ["jobs4internationals", "empfehlungsbund", "jobs-daheim", "itsax", "mintbund"]):
+        source_label = "Jobs4Internationals"
+    else:
+        source_label = "LinkedIn"
+
+    # Visa badge
+    visa_badge = ""
+    reasons = str(job.get("filter_reasons") or "")
+    if job.get("visa_mentioned") or "visa:sponsorship_offered" in reasons or source_label in ("Relocate.me", "Jobs4Internationals"):
+        visa_badge = "  |  🛂 *Visa / Relocation Support*"
+
     # Pre-filled GitHub issue URL to mark applied from phone in 1 tap
     encoded_title = urllib.parse.quote(f"applied:{job_id}")
     encoded_body = urllib.parse.quote(
@@ -76,9 +94,9 @@ def format_slack_message(job: Dict[str, Any], github_repo: str) -> str:
 
     msg = (
         f"🎯 *{title}* at *{company}*\n"
-        f"📍 {location}  |  ⭐️ Match Score: *{score} / 10*\n"
+        f"📍 {location}  |  ⭐️ Match Score: *{score} / 10*{visa_badge}\n"
         f"🛠️ *Stack:* `{clean_stack}`\n\n"
-        f"🔗 <{job_url}|Open Listing on LinkedIn>\n"
+        f"🔗 <{job_url}|Open Listing on {source_label}>\n"
         f"✅ *<{mark_applied_url}|Tap Here to Mark as Applied (Stops Reminders)>*\n"
     )
     return msg
@@ -102,29 +120,61 @@ def send_slack_notification(
     if bot_token and channel_id and SLACK_SDK_AVAILABLE:
         client = WebClient(token=bot_token)
         try:
-            if resume_pdf_path and Path(resume_pdf_path).exists():
-                pdf_file = Path(resume_pdf_path)
-                filename = f"Ritobrita_De_Resume_{job.get('company', 'Company')}_{job.get('job_id')}.pdf"
+            file_uploads = []
+            company_clean = re.sub(r'[^a-zA-Z0-9_-]', '_', job.get('company', 'Company'))
+            job_id = job.get('job_id', '')
 
-                # Upload resume PDF directly into channel with description
-                client.files_upload_v2(
-                    channel=channel_id,
-                    file=str(pdf_file.resolve()),
-                    filename=filename,
-                    title=f"Tailored Resume: {job.get('title')}",
-                    initial_comment=message_text,
-                )
-                print(f"Sent Slack message with attached resume for {job.get('job_id')} via Slack SDK.")
-                return True
+            # 1. Resume PDF
+            if resume_pdf_path and Path(resume_pdf_path).exists():
+                r_file = Path(resume_pdf_path)
+                file_uploads.append({
+                    "file": str(r_file.resolve()),
+                    "filename": f"Ritobrita_De_Resume_{company_clean}_{job_id}.pdf",
+                    "title": f"Resume - {job.get('title')}",
+                })
+
+            # 2. Cover Letter PDF
+            if cover_letter_pdf_path and Path(cover_letter_pdf_path).exists():
+                cl_file = Path(cover_letter_pdf_path)
+                suffix = cl_file.suffix or ".pdf"
+                file_uploads.append({
+                    "file": str(cl_file.resolve()),
+                    "filename": f"Ritobrita_De_Cover_Letter_{company_clean}_{job_id}{suffix}",
+                    "title": f"Cover Letter - {job.get('title')}",
+                })
+
+            if file_uploads:
+                try:
+                    # Upload multiple files simultaneously in one Slack message!
+                    client.files_upload_v2(
+                        channel=channel_id,
+                        file_uploads=file_uploads,
+                        initial_comment=message_text,
+                    )
+                    attached_names = ", ".join([f["filename"] for f in file_uploads])
+                    print(f"Sent Slack message with files ({attached_names}) for {job_id} via Slack SDK.")
+                    return True
+                except SlackApiError as upload_err:
+                    print(f"File upload failed ({upload_err.response.get('error', upload_err)}). Falling back to text message...")
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=message_text,
+                    )
+                    print(f"Sent Slack text alert for {job_id} successfully.")
+                    return True
             else:
                 client.chat_postMessage(
                     channel=channel_id,
                     text=message_text,
                 )
-                print(f"Sent Slack message for {job.get('job_id')} via Slack SDK.")
+                print(f"Sent Slack text message for {job_id} via Slack SDK.")
                 return True
         except SlackApiError as e:
             print(f"Slack API Error: {e.response.get('error', e)}")
+            needed = e.response.get('needed', '')
+            provided = e.response.get('provided', '')
+            if needed:
+                print(f"  Missing required scope: '{needed}' (Current scopes: '{provided}')")
 
     # Method 2: Incoming Webhook (Fallback)
     if webhook_url:
